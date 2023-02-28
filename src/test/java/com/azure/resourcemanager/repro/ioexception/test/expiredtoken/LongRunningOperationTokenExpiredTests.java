@@ -1,4 +1,4 @@
-package com.azure.resourcemanager.repro.ioexception.test;
+package com.azure.resourcemanager.repro.ioexception.test.expiredtoken;
 
 import com.azure.core.credential.AccessToken;
 import com.azure.core.http.HttpClient;
@@ -21,7 +21,12 @@ import reactor.core.publisher.Mono;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.time.Instant;
 import java.time.OffsetDateTime;
+import java.time.ZoneId;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 public class LongRunningOperationTokenExpiredTests {
 
@@ -29,7 +34,7 @@ public class LongRunningOperationTokenExpiredTests {
      * Here we mock the situation where token expired during long running operation.
      */
     @Test
-    public void testResourceGroupDelete() {
+    public void testResourceGroupDelete() throws InterruptedException {
         HttpClient httpClient = Mockito.mock(HttpClient.class);
         ArgumentCaptor<HttpRequest> httpRequest = ArgumentCaptor.forClass(HttpRequest.class);
 
@@ -57,7 +62,16 @@ public class LongRunningOperationTokenExpiredTests {
                             Mockito
                                 .when(httpResponse.getBodyAsString())
                                 .thenReturn(Mono.just(responseStr));
-                            Mockito.when(httpResponse.getRequest()).thenReturn(httpRequest.getValue());
+                            HttpRequest httpRequestValue = httpRequest.getValue();
+                            Mockito.when(httpResponse.getRequest()).thenReturn(httpRequestValue);
+                            String auth = httpRequestValue.getHeaders().getValue("Authorization");
+
+                            OffsetDateTime expireTime = decode(auth);
+                            if (OffsetDateTime.now().isAfter(expireTime)) {
+                                System.out.println("expired!");
+                                System.exit(1);
+                            }
+
                             return Mono.just(httpResponse);
                         }));
 
@@ -68,7 +82,10 @@ public class LongRunningOperationTokenExpiredTests {
                 .withHttpClient(httpClient)
                 .authenticate(
                     // mock the situation where service returns an near-expired token, here we return a token 30 seconds before expiry
-                    tokenRequestContext -> Mono.just(new AccessToken("this_is_an_expired_token", OffsetDateTime.now().plusSeconds(30))),
+                    tokenRequestContext -> Mono.defer(() -> {
+                        OffsetDateTime expireTime = OffsetDateTime.now().plusSeconds(30);
+                        return Mono.just(new AccessToken(encode("this_is_a_valid_token", expireTime), expireTime));
+                    }),
                     new AzureProfile("", "", AzureEnvironment.AZURE))
             .withDefaultSubscription();
 
@@ -80,6 +97,22 @@ public class LongRunningOperationTokenExpiredTests {
             .buildClient();
 
         // implementation of manager.resourceGroups().deleteByName() calls this method
-        managementClient.getResourceGroups().deleteAsync("my-rg").block();
+        ExecutorService executorService = Executors.newFixedThreadPool(100);
+        for (int i = 0; i < 100; i++) {
+            executorService.submit(() -> {
+                managementClient.getResourceGroups().deleteAsync("my-rg").block();
+            });
+        }
+        // wait indefinitely
+        executorService.awaitTermination(100, TimeUnit.DAYS);
+    }
+
+    private OffsetDateTime decode(String auth) {
+        long epochMilli = Long.parseLong(auth.replace("Bearer this_is_a_valid_token", ""));
+        return OffsetDateTime.ofInstant(Instant.ofEpochMilli(epochMilli), ZoneId.systemDefault());
+    }
+
+    private String encode(String token, OffsetDateTime expireTime) {
+        return token + expireTime.toInstant().toEpochMilli();
     }
 }

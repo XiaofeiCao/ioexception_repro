@@ -1,4 +1,4 @@
-package com.azure.resourcemanager.repro.ioexception.test;
+package com.azure.resourcemanager.repro.ioexception.test.undeliverable;
 
 import com.azure.core.http.HttpResponse;
 import com.azure.core.http.okhttp.OkHttpAsyncHttpClientBuilder;
