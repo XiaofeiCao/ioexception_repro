@@ -3,6 +3,7 @@ package com.azure.resourcemanager.repro.ioexception.test.expiredtoken;
 import com.azure.core.credential.AccessToken;
 import com.azure.core.http.HttpClient;
 import com.azure.core.http.HttpHeaders;
+import com.azure.core.http.HttpMethod;
 import com.azure.core.http.HttpRequest;
 import com.azure.core.http.HttpResponse;
 import com.azure.core.http.policy.HttpLogDetailLevel;
@@ -12,11 +13,16 @@ import com.azure.core.management.profile.AzureProfile;
 import com.azure.resourcemanager.resources.ResourceManager;
 import com.azure.resourcemanager.resources.implementation.ResourceManagementClientBuilder;
 import com.azure.resourcemanager.resources.implementation.ResourceManagementClientImpl;
+import org.jetbrains.annotations.NotNull;
+import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mockito;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import reactor.core.publisher.SignalType;
+import reactor.core.scheduler.Schedulers;
+import reactor.test.StepVerifier;
 
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
@@ -24,56 +30,29 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneId;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Consumer;
 
 public class LongRunningOperationTokenExpiredTests {
 
     /**
      * Here we mock the situation where token expired during long running operation.
+     *
      */
     @Test
-    public void testResourceGroupDelete() throws InterruptedException {
+    public void testResourceGroupDelete() {
         HttpClient httpClient = Mockito.mock(HttpClient.class);
         ArgumentCaptor<HttpRequest> httpRequest = ArgumentCaptor.forClass(HttpRequest.class);
+
+        OffsetDateTime startTime = OffsetDateTime.now();
+        AtomicInteger tokenAcquisitionCount = new AtomicInteger();
 
         Mockito
             .when(httpClient.send(httpRequest.capture(), Mockito.any()))
             .thenReturn(
                 Mono
                     .defer(
-                        () -> {
-                            String responseStr =
-                                "{\"id\":\"em\",\"name\":\"kzsz\",\"status\":\"IN_PROGRESS\",\"percentComplete\":8.862287,\"startTime\":\"2021-03-07T09:12:02Z\",\"endTime\":\"2021-04-02T00:38:08Z\"}";
-
-                            HttpResponse httpResponse = Mockito.mock(HttpResponse.class);
-
-                            // always return 202 for the long running operation to poll indefinitely
-                            Mockito.when(httpResponse.getStatusCode()).thenReturn(202);
-                            // set Location url for poll operation to start
-                            Mockito.when(httpResponse.getHeaders()).thenReturn(new HttpHeaders().set("Location", "https://www.example.org"));
-                            Mockito
-                                .when(httpResponse.getBody())
-                                .thenReturn(Flux.just(ByteBuffer.wrap(responseStr.getBytes(StandardCharsets.UTF_8))));
-                            Mockito
-                                .when(httpResponse.getBodyAsByteArray())
-                                .thenReturn(Mono.just(responseStr.getBytes(StandardCharsets.UTF_8)));
-                            Mockito
-                                .when(httpResponse.getBodyAsString())
-                                .thenReturn(Mono.just(responseStr));
-                            HttpRequest httpRequestValue = httpRequest.getValue();
-                            Mockito.when(httpResponse.getRequest()).thenReturn(httpRequestValue);
-                            String auth = httpRequestValue.getHeaders().getValue("Authorization");
-
-                            OffsetDateTime expireTime = decode(auth);
-                            if (OffsetDateTime.now().isAfter(expireTime)) {
-                                System.out.println("expired!");
-                                System.exit(1);
-                            }
-
-                            return Mono.just(httpResponse);
-                        }));
+                        () -> constructResponse(httpRequest, startTime)));
 
         ResourceManager manager =
             ResourceManager
@@ -84,7 +63,8 @@ public class LongRunningOperationTokenExpiredTests {
                     // mock the situation where service returns an near-expired token, here we return a token 30 seconds before expiry
                     tokenRequestContext -> Mono.defer(() -> {
                         OffsetDateTime expireTime = OffsetDateTime.now().plusSeconds(30);
-                        return Mono.just(new AccessToken(encode("this_is_a_valid_token", expireTime), expireTime));
+                        return Mono.just(new AccessToken(encode("this_is_a_valid_token", expireTime), expireTime))
+                                .doFinally(signalType -> tokenAcquisitionCount.incrementAndGet());
                     }),
                     new AzureProfile("", "", AzureEnvironment.AZURE))
             .withDefaultSubscription();
@@ -96,22 +76,73 @@ public class LongRunningOperationTokenExpiredTests {
             .subscriptionId(manager.subscriptionId())
             .buildClient();
 
-        // implementation of manager.resourceGroups().deleteByName() calls this method
-        ExecutorService executorService = Executors.newFixedThreadPool(100);
-        for (int i = 0; i < 100; i++) {
-            executorService.submit(() -> {
-                managementClient.getResourceGroups().deleteAsync("my-rg").block();
-            });
-        }
-        // wait indefinitely
-        executorService.awaitTermination(100, TimeUnit.DAYS);
+        // concurrently run delete on 100 threads
+        // this should take 1 minute to finish, during which 2 extra token acquisition should happen
+        StepVerifier.create(Flux.range(1, 100)
+                .parallel(100)
+                .runOn(Schedulers.parallel())
+                .sequential()
+                .flatMap(ignored ->
+                        // implementation of manager.resourceGroups().deleteByName() calls this method
+                        managementClient.getResourceGroups().deleteAsync("my-rg"))
+                .reduce((unused, unused2) -> unused))
+                .verifyComplete();
+
+        Assertions.assertEquals(3, tokenAcquisitionCount.get());
     }
 
+    @NotNull
+    private Mono<HttpResponse> constructResponse(ArgumentCaptor<HttpRequest> httpRequest, OffsetDateTime startTime) {
+        String responseStr =
+            "{\"id\":\"em\",\"name\":\"kzsz\",\"status\":\"IN_PROGRESS\",\"percentComplete\":8.862287,\"startTime\":\"2021-03-07T09:12:02Z\",\"endTime\":\"2021-04-02T00:38:08Z\"}";
+
+        HttpResponse httpResponse = Mockito.mock(HttpResponse.class);
+
+        OffsetDateTime now = OffsetDateTime.now();
+        if (now.isAfter(startTime.plusMinutes(1))) {
+            // after 1 minute, return success
+            Mockito.when(httpResponse.getStatusCode()).thenReturn(200);
+        } else {
+            // always return 202 for the long running operation to poll indefinitely
+            Mockito.when(httpResponse.getStatusCode()).thenReturn(202);
+        }
+
+        HttpRequest httpRequestValue = httpRequest.getValue();
+        if (httpRequestValue.getHttpMethod() != HttpMethod.GET) {
+            // set Location url for poll operation to start
+            Mockito.when(httpResponse.getHeaders()).thenReturn(new HttpHeaders().set("Location", "https://www.example.org"));
+        } else {
+            Mockito.when(httpResponse.getHeaders()).thenReturn(new HttpHeaders());
+        }
+        Mockito
+            .when(httpResponse.getBody())
+            .thenReturn(Flux.just(ByteBuffer.wrap(responseStr.getBytes(StandardCharsets.UTF_8))));
+        Mockito
+            .when(httpResponse.getBodyAsByteArray())
+            .thenReturn(Mono.just(responseStr.getBytes(StandardCharsets.UTF_8)));
+        Mockito
+            .when(httpResponse.getBodyAsString())
+            .thenReturn(Mono.just(responseStr));
+        Mockito.when(httpResponse.getRequest()).thenReturn(httpRequestValue);
+        String auth = httpRequestValue.getHeaders().getValue("Authorization");
+
+        OffsetDateTime expireTime = decode(auth);
+        if (now.isAfter(expireTime)) {
+            // if an expired token ever got sent, stop with error
+            System.out.println("expired!");
+            System.exit(1);
+        }
+
+        return Mono.just(httpResponse);
+    }
+
+    // decode expire time from the token
     private OffsetDateTime decode(String auth) {
         long epochMilli = Long.parseLong(auth.replace("Bearer this_is_a_valid_token", ""));
         return OffsetDateTime.ofInstant(Instant.ofEpochMilli(epochMilli), ZoneId.systemDefault());
     }
 
+    // encode the token expire time into token string
     private String encode(String token, OffsetDateTime expireTime) {
         return token + expireTime.toInstant().toEpochMilli();
     }
