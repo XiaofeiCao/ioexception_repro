@@ -123,6 +123,10 @@ public class LongRunningOperationTokenExpiredTests {
                                                     .format(DateTimeFormatter.ofPattern("d/M/yyyy h:mm:ss a")));
                                     // ensure retried in test
                                     retriedOnExpiredToken.set(true);
+                                } else if (httpResponse.getHeaderValue(WWW_AUTHENTICATE) != null) {
+                                    // in case a Conditional Access policy change, log it:
+                                    // https://learn.microsoft.com/en-us/azure/active-directory/conditional-access/concept-continuous-access-evaluation
+                                    LOGGER.warning("Conditional Access state changed, header: {}", httpResponse.getHeaderValue(WWW_AUTHENTICATE));
                                 }
                                 return super.shouldRetry(httpResponse)
                                         || isExpiredToken;
