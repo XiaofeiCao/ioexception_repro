@@ -9,12 +9,14 @@ import com.azure.core.management.AzureEnvironment;
 import com.azure.core.management.Region;
 import com.azure.core.management.profile.AzureProfile;
 import com.azure.resourcemanager.resources.ResourceManager;
+import com.azure.resourcemanager.resources.models.ResourceGroup;
 import com.github.tomakehurst.wiremock.WireMockServer;
 import com.github.tomakehurst.wiremock.core.WireMockConfiguration;
 import io.reactivex.rxjava3.core.Single;
 import okhttp3.Dispatcher;
 import okhttp3.OkHttpClient;
 import org.jetbrains.annotations.NotNull;
+import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import reactor.core.publisher.Mono;
@@ -28,9 +30,9 @@ import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.time.OffsetDateTime;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static com.github.tomakehurst.wiremock.client.WireMock.aResponse;
-import static com.github.tomakehurst.wiremock.client.WireMock.get;
 import static com.github.tomakehurst.wiremock.client.WireMock.put;
 
 public class CallTimeoutMockTests {
@@ -85,19 +87,28 @@ public class CallTimeoutMockTests {
                                 new AzureProfile(UUID.randomUUID().toString(), SUBSCRIPTION_ID, AzureEnvironment.AZURE))
                         .withDefaultSubscription();
 
+        AtomicBoolean errorEncountered = new AtomicBoolean(false);
+        AtomicBoolean finished = new AtomicBoolean(false);
+
         try {
-            Single.fromPublisher(
-                    manager.resourceGroups()
-                            .define(RG_NAME)
-                            .withRegion(Region.US_WEST)
-                            .createAsync())
+            ResourceGroup resourceGroup = Single.fromPublisher(manager.resourceGroups()
+                    .define(RG_NAME)
+                    .withRegion(Region.US_WEST)
+                    .createAsync())
                     // doOnError on Single
-                    .doOnError(throwable -> System.out.println("error encountered, type: " + throwable.getClass()))
-                    .blockingSubscribe();
+                    .doOnError(throwable -> {
+                        throwable.printStackTrace();
+                        errorEncountered.set(true);
+                    })
+                    .blockingGet();
+        } catch (Throwable t) {
+            // NO-OP
         } finally {
-            // ensure the chain is correctly stopped
-            System.out.println("finished");
+            finished.set(true);
         }
+
+        Assertions.assertTrue(errorEncountered.get());
+        Assertions.assertTrue(finished.get());
     }
 
     @NotNull
@@ -138,6 +149,7 @@ public class CallTimeoutMockTests {
                             chain.proceed(chain.request()))
                 // set call timeout to 1 second, so that client always experiences call timeouts
                 .callTimeout(Duration.ofSeconds(1))
+//                .readTimeout(Duration.ofSeconds(1))
                 // bypass https check
                 .sslSocketFactory(sslContext.getSocketFactory(), (X509TrustManager) trustAllCerts[0])
                 .hostnameVerifier((hostname, session) -> true)

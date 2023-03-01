@@ -112,6 +112,12 @@
         <version>2.24.1</version> <!-- {x-version-update;com.github.tomakehurst:wiremock-standalone;external_dependency} -->
         <scope>test</scope>
     </dependency>
+    <!-- https://mvnrepository.com/artifact/io.projectreactor.addons/reactor-adapter -->
+    <dependency>
+        <groupId>io.projectreactor.addons</groupId>
+        <artifactId>reactor-adapter</artifactId>
+        <version>3.5.0</version>
+    </dependency>
 </dependencies>
 
 </project>

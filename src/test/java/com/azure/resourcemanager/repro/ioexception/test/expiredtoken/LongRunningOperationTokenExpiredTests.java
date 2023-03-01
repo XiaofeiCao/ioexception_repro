@@ -11,13 +11,10 @@ import com.azure.core.http.policy.HttpLogOptions;
 import com.azure.core.management.AzureEnvironment;
 import com.azure.core.management.profile.AzureProfile;
 import com.azure.resourcemanager.resources.ResourceManager;
-import com.azure.resourcemanager.resources.implementation.ResourceManagementClientBuilder;
-import com.azure.resourcemanager.resources.implementation.ResourceManagementClientImpl;
+import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Flowable;
-import io.reactivex.rxjava3.core.Single;
 import io.reactivex.rxjava3.schedulers.Schedulers;
 import org.jetbrains.annotations.NotNull;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mockito;
@@ -26,7 +23,6 @@ import reactor.core.publisher.Mono;
 
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
-import java.time.Duration;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneId;
@@ -44,13 +40,14 @@ public class LongRunningOperationTokenExpiredTests {
         ArgumentCaptor<HttpRequest> httpRequest = ArgumentCaptor.forClass(HttpRequest.class);
 
         OffsetDateTime startTime = OffsetDateTime.now();
-        AtomicInteger tokenAcquisitionCount = new AtomicInteger();
 
         Mockito
             .when(httpClient.send(httpRequest.capture(), Mockito.any()))
             .thenReturn(
                 Mono
                     .defer(
+                            // the response returns 202s for the first 6 minutes
+                            // followed by 200s afterwards
                         () -> constructResponse(httpRequest, startTime)));
 
         ResourceManager manager =
@@ -62,37 +59,24 @@ public class LongRunningOperationTokenExpiredTests {
                     // mock the situation where service returns an near-expired token, here we return a token 30 seconds before expiry
                     tokenRequestContext -> Mono.defer(() -> {
                         OffsetDateTime expireTime = OffsetDateTime.now().plusSeconds(30);
-                        return Mono.just(new AccessToken(encode("this_is_a_valid_token", expireTime), expireTime))
-                                .doFinally(signalType -> tokenAcquisitionCount.incrementAndGet());
+                        return Mono.just(new AccessToken(encode("this_is_a_valid_token", expireTime), expireTime));
                     }),
                     new AzureProfile("", "", AzureEnvironment.AZURE))
             .withDefaultSubscription();
 
-        ResourceManagementClientImpl managementClient = new ResourceManagementClientBuilder()
-            // set poll interval to 1 second
-            .defaultPollInterval(Duration.ofSeconds(1))
-            .pipeline(manager.httpPipeline())
-            .subscriptionId(manager.subscriptionId())
-            .buildClient();
-
         // concurrently run delete on 100 threads
-        // this should take 1 minute to finish, during which 2 extra token acquisition should happen
+        // this should take 6 minute to finish
         Flowable.range(1, 100)
                 .parallel(100)
                 .sequential()
-                .flatMap(ignored ->
+                .flatMapCompletable(ignored ->
                         // implementation of manager.resourceGroups().deleteByName() calls this method
-//                        RxJava3Adapter.monoToSingle(managementClient.getResourceGroups().deleteAsync("my-rg")).toFlowable())
-                        Single.fromPublisher(managementClient.getResourceGroups().deleteAsync("my-rg")).toFlowable())
-                .count()
-                .map(count -> {
-                    Assertions.assertEquals(100, count);
-                    return count;
-                })
+                        // deleteAsync returns Mono<Void>, which should not be converted to Single, use Completable instead
+                        // see https://github.com/r2dbc/r2dbc-spi/issues/13#issuecomment-427323053
+                        Completable.fromPublisher(
+                                manager.resourceGroups().deleteByNameAsync("my-rg")))
                 .subscribeOn(Schedulers.io())
                 .blockingSubscribe();
-
-//        Assertions.assertEquals(3, tokenAcquisitionCount.get());
     }
 
     @NotNull
@@ -103,8 +87,8 @@ public class LongRunningOperationTokenExpiredTests {
         HttpResponse httpResponse = Mockito.mock(HttpResponse.class);
 
         OffsetDateTime now = OffsetDateTime.now();
-        if (now.isAfter(startTime.plusMinutes(1))) {
-            // after 1 minute, return success
+        if (now.isAfter(startTime.plusMinutes(6))) {
+            // after 6 minute, return success
             Mockito.when(httpResponse.getStatusCode()).thenReturn(200);
         } else {
             // always return 202 for the long running operation to poll indefinitely
