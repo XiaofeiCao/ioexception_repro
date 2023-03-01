@@ -6,36 +6,48 @@ import com.azure.core.http.HttpHeaders;
 import com.azure.core.http.HttpMethod;
 import com.azure.core.http.HttpRequest;
 import com.azure.core.http.HttpResponse;
+import com.azure.core.http.policy.ExponentialBackoff;
 import com.azure.core.http.policy.HttpLogDetailLevel;
 import com.azure.core.http.policy.HttpLogOptions;
+import com.azure.core.http.policy.RetryPolicy;
 import com.azure.core.management.AzureEnvironment;
+import com.azure.core.management.exception.ManagementException;
 import com.azure.core.management.profile.AzureProfile;
-import com.azure.resourcemanager.resources.ResourceManager;
+import com.azure.core.util.BinaryData;
+import com.azure.core.util.logging.ClientLogger;
+import com.azure.resourcemanager.AzureResourceManager;
 import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.schedulers.Schedulers;
 import org.jetbrains.annotations.NotNull;
+import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mockito;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
+import java.net.HttpURLConnection;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneId;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 public class LongRunningOperationTokenExpiredTests {
+
+    private static final ClientLogger LOGGER = new ClientLogger(LongRunningOperationTokenExpiredTests.class);
+    private static final String WWW_AUTHENTICATE = "WWW-Authenticate";
 
     /**
      * Here we mock the situation where token expired during long running operation.
      *
      */
     @Test
-    public void testResourceGroupDelete() {
+    public void testConcurrentResourceGroupDelete() {
         HttpClient httpClient = Mockito.mock(HttpClient.class);
         ArgumentCaptor<HttpRequest> httpRequest = ArgumentCaptor.forClass(HttpRequest.class);
 
@@ -48,10 +60,10 @@ public class LongRunningOperationTokenExpiredTests {
                     .defer(
                             // the response returns 202s for the first 6 minutes
                             // followed by 200s afterwards
-                        () -> constructResponse(httpRequest, startTime)));
+                        () -> constructSuccessResponse(httpRequest, startTime)));
 
-        ResourceManager manager =
-            ResourceManager
+        AzureResourceManager manager =
+            AzureResourceManager
                 .configure()
                 .withLogOptions(new HttpLogOptions().setLogLevel(HttpLogDetailLevel.BODY_AND_HEADERS))
                 .withHttpClient(httpClient)
@@ -80,8 +92,97 @@ public class LongRunningOperationTokenExpiredTests {
                 .blockingSubscribe();
     }
 
+
+    @Test
+    public void testRetryOnExpiredToken() {
+        HttpClient httpClient = Mockito.mock(HttpClient.class);
+        ArgumentCaptor<HttpRequest> httpRequest = ArgumentCaptor.forClass(HttpRequest.class);
+        Mockito
+                .when(httpClient.send(httpRequest.capture(), Mockito.any()))
+                .thenReturn(
+                        Mono
+                                .defer(
+                                        () -> constructExpiredTokenResponse(httpRequest)));
+        AtomicBoolean retriedOnExpiredToken = new AtomicBoolean(false);
+
+        // construct AzureResourceManager with retry on ExpireAuthenticationToken policy
+        AzureResourceManager manager =
+                AzureResourceManager
+                        .configure()
+                        .withLogOptions(new HttpLogOptions().setLogLevel(HttpLogDetailLevel.BODY_AND_HEADERS))
+                        .withHttpClient(httpClient)
+                        // retry policy
+                        .withRetryPolicy(new RetryPolicy(new ExponentialBackoff() {
+                            @Override
+                            public boolean shouldRetry(HttpResponse httpResponse) {
+                                boolean isExpiredToken = isExpiredAuthenticationToken(httpResponse);
+                                if (isExpiredToken) {
+                                    // Do some log here
+                                    LOGGER.error("Token expired. \nMessage: {}.\nCurrent UTC time: {}",
+                                            httpResponse.getBodyAsString().block(),
+                                            OffsetDateTime.now().atZoneSameInstant(ZoneOffset.UTC)
+                                                    .format(DateTimeFormatter.ofPattern("d/M/yyyy h:mm:ss a")));
+                                    // ensure retried in test
+                                    retriedOnExpiredToken.set(true);
+                                }
+                                return super.shouldRetry(httpResponse)
+                                        || isExpiredToken;
+                            }
+                        }))
+                        .authenticate(
+                                // mock the situation where service returns an near-expired token, here we return a token 6 minutes before expiry
+                                // token refresh happens 5 minutes before token expiry, so it should happen 1 minute after the test starts
+                                tokenRequestContext -> Mono.defer(() -> {
+                                    OffsetDateTime expireTime = OffsetDateTime.now().plusMinutes(6);
+                                    return Mono.just(new AccessToken(encode("this_is_a_valid_token", expireTime), expireTime));
+                                }),
+                                new AzureProfile("", "", AzureEnvironment.AZURE))
+                        .withDefaultSubscription();
+
+        Assertions.assertThrows(ManagementException.class, () -> manager.resourceGroups().deleteByNameAsync("my-rg").block());
+        Assertions.assertTrue(retriedOnExpiredToken.get());
+    }
+
+    private boolean isExpiredAuthenticationToken(HttpResponse httpResponse) {
+        return
+                // 401
+                httpResponse.getStatusCode() == HttpURLConnection.HTTP_UNAUTHORIZED
+                // no ARM Challenge present
+                && httpResponse.getHeaderValue(WWW_AUTHENTICATE) == null
+                // contains error code "ExpiredAuthenticationToken"
+                && httpResponse.getBodyAsBinaryData() != null
+                && httpResponse.getBodyAsBinaryData().toString().contains("ExpiredAuthenticationToken");
+    }
+
+    private Mono<HttpResponse> constructExpiredTokenResponse(ArgumentCaptor<HttpRequest> httpRequest) {
+        String responseStr = "{\"error\":{\"code\":\"ExpiredAuthenticationToken\",\"message\":\"The access token expiry UTC time '8/19/2017 3:20:06 AM' is earlier than current UTC time '8/19/2017 2:09:10 PM'.\"}}";
+
+        HttpResponse httpResponse = Mockito.mock(HttpResponse.class);
+        Mockito.when(httpResponse.getStatusCode()).thenReturn(401);
+        Mockito.when(httpResponse.getHeaders()).thenReturn(new HttpHeaders());
+
+        Mockito
+                .when(httpResponse.getBody())
+                .thenReturn(Flux.just(ByteBuffer.wrap(responseStr.getBytes(StandardCharsets.UTF_8))));
+        Mockito
+                .when(httpResponse.getBodyAsByteArray())
+                .thenReturn(Mono.just(responseStr.getBytes(StandardCharsets.UTF_8)));
+        Mockito
+                .when(httpResponse.getBodyAsBinaryData())
+                .thenReturn(BinaryData.fromString(responseStr));
+        Mockito
+                .when(httpResponse.getBodyAsString())
+                .thenReturn(Mono.just(responseStr));
+        Mockito
+                .when(httpResponse.buffer())
+                .thenReturn(httpResponse);
+        Mockito.when(httpResponse.getRequest()).thenReturn(httpRequest.getValue());
+
+        return Mono.just(httpResponse);
+    }
+
     @NotNull
-    private Mono<HttpResponse> constructResponse(ArgumentCaptor<HttpRequest> httpRequest, OffsetDateTime startTime) {
+    private Mono<HttpResponse> constructSuccessResponse(ArgumentCaptor<HttpRequest> httpRequest, OffsetDateTime startTime) {
         String responseStr =
             "{\"id\":\"em\",\"name\":\"kzsz\",\"status\":\"IN_PROGRESS\",\"percentComplete\":8.862287,\"startTime\":\"2021-03-07T09:12:02Z\",\"endTime\":\"2021-04-02T00:38:08Z\"}";
 

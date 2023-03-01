@@ -8,7 +8,7 @@ import com.azure.core.http.policy.HttpLogOptions;
 import com.azure.core.management.AzureEnvironment;
 import com.azure.core.management.Region;
 import com.azure.core.management.profile.AzureProfile;
-import com.azure.resourcemanager.resources.ResourceManager;
+import com.azure.resourcemanager.AzureResourceManager;
 import com.azure.resourcemanager.resources.models.ResourceGroup;
 import com.github.tomakehurst.wiremock.WireMockServer;
 import com.github.tomakehurst.wiremock.core.WireMockConfiguration;
@@ -77,8 +77,8 @@ public class CallTimeoutMockTests {
         // replace ARM endpoint to our mock host
         AzureEnvironment.AZURE.getEndpoints().put("resourceManagerEndpointUrl", "https://localhost:" + server.httpsPort() + "/");
 
-        ResourceManager manager =
-                ResourceManager
+        AzureResourceManager manager =
+                AzureResourceManager
                         .configure()
                         .withLogOptions(new HttpLogOptions().setLogLevel(HttpLogDetailLevel.BODY_AND_HEADERS))
                         .withHttpClient(client)
@@ -90,22 +90,22 @@ public class CallTimeoutMockTests {
         AtomicBoolean errorEncountered = new AtomicBoolean(false);
         AtomicBoolean finished = new AtomicBoolean(false);
 
-        try {
-            ResourceGroup resourceGroup = Single.fromPublisher(manager.resourceGroups()
-                    .define(RG_NAME)
-                    .withRegion(Region.US_WEST)
-                    .createAsync())
-                    // doOnError on Single
-                    .doOnError(throwable -> {
-                        throwable.printStackTrace();
-                        errorEncountered.set(true);
-                    })
-                    .blockingGet();
-        } catch (Throwable t) {
-            // NO-OP
-        } finally {
-            finished.set(true);
-        }
+        Assertions.assertThrows(Exception.class, () -> {
+            try {
+                ResourceGroup resourceGroup = Single.fromPublisher(manager.resourceGroups()
+                        .define(RG_NAME)
+                        .withRegion(Region.US_WEST)
+                        .createAsync())
+                        // doOnError on Single
+                        .doOnError(throwable -> {
+                            throwable.printStackTrace();
+                            errorEncountered.set(true);
+                        })
+                        .blockingGet();
+            } finally {
+                finished.set(true);
+            }
+        });
 
         Assertions.assertTrue(errorEncountered.get());
         Assertions.assertTrue(finished.get());
