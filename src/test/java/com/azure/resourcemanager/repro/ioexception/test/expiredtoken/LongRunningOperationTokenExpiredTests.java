@@ -56,9 +56,10 @@ public class LongRunningOperationTokenExpiredTests {
                 .withLogOptions(new HttpLogOptions().setLogLevel(HttpLogDetailLevel.BODY_AND_HEADERS))
                 .withHttpClient(httpClient)
                 .authenticate(
-                    // mock the situation where service returns an near-expired token, here we return a token 30 seconds before expiry
+                    // mock the situation where service returns an near-expired token, here we return a token 6 minutes before expiry
+                    // token refresh happens 5 minutes before token expiry, so it should happen 1 minute after the test starts
                     tokenRequestContext -> Mono.defer(() -> {
-                        OffsetDateTime expireTime = OffsetDateTime.now().plusSeconds(30);
+                        OffsetDateTime expireTime = OffsetDateTime.now().plusMinutes(6);
                         return Mono.just(new AccessToken(encode("this_is_a_valid_token", expireTime), expireTime));
                     }),
                     new AzureProfile("", "", AzureEnvironment.AZURE))
