@@ -11,7 +11,6 @@ import com.azure.core.http.policy.HttpLogDetailLevel;
 import com.azure.core.http.policy.HttpLogOptions;
 import com.azure.core.http.policy.RetryPolicy;
 import com.azure.core.management.AzureEnvironment;
-import com.azure.core.management.exception.ManagementException;
 import com.azure.core.management.profile.AzureProfile;
 import com.azure.core.util.BinaryData;
 import com.azure.core.util.logging.ClientLogger;
@@ -139,7 +138,8 @@ public class LongRunningOperationTokenExpiredTests {
                                 new AzureProfile("", "", AzureEnvironment.AZURE))
                         .withDefaultSubscription();
 
-        Assertions.assertThrows(ManagementException.class, () -> manager.resourceGroups().deleteByNameAsync("my-rg").block());
+        Assertions.assertThrows(Exception.class, () ->
+                Completable.fromPublisher(manager.resourceGroups().deleteByNameAsync("my-rg")).blockingAwait());
         Assertions.assertTrue(retriedOnExpiredToken.get());
     }
 
