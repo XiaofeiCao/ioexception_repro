@@ -4,11 +4,14 @@ import com.azure.core.http.okhttp.OkHttpAsyncHttpClientBuilder;
 import com.azure.core.http.policy.HttpLogDetailLevel;
 import com.azure.core.management.AzureEnvironment;
 import com.azure.core.management.Region;
+import com.azure.core.management.exception.ManagementException;
 import com.azure.core.management.profile.AzureProfile;
 import com.azure.core.test.TestBase;
 import com.azure.core.util.logging.ClientLogger;
 import com.azure.identity.DefaultAzureCredentialBuilder;
 import com.azure.resourcemanager.AzureResourceManager;
+import com.azure.resourcemanager.network.models.NetworkSecurityGroup;
+import com.azure.resourcemanager.resources.ResourceManager;
 import com.azure.resourcemanager.resources.models.ResourceGroup;
 import okhttp3.ConnectionPool;
 import okhttp3.Dispatcher;
@@ -20,12 +23,14 @@ import reactor.core.publisher.Mono;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
+import java.util.function.Predicate;
 
 public class BatchCreateResourceGroupTests extends TestBase {
     private static final ClientLogger LOGGER = new ClientLogger(BatchCreateResourceGroupTests.class);
     private static final int PARALLELISM = 100;
 
     private AzureResourceManager azureResourceManager;
+    private ResourceManager resourceManager;
 
     /**
      * Entry for test.
@@ -67,6 +72,8 @@ public class BatchCreateResourceGroupTests extends TestBase {
                 .withLogLevel(HttpLogDetailLevel.BASIC)
                 .authenticate(new DefaultAzureCredentialBuilder().build(), new AzureProfile(tenantId, subscriptionId, AzureEnvironment.AZURE))
                 .withDefaultSubscription();
+
+        resourceManager = azureResourceManager.genericResources().manager();
     }
 
     @Test
@@ -82,19 +89,45 @@ public class BatchCreateResourceGroupTests extends TestBase {
 
     private void batchCreate100ResourceGroups() {
         String resourceGroupPrefix = "rg-batchtest-";
+        String nsgNamePrefix = "nsg-batchtest-";
+        Region region = Region.US_WEST;
         try {
-            // create 100 resource groups in parallel
+            // create 100 resource groups and NSGs in parallel
             Flux.range(0, PARALLELISM)
                     .parallel(PARALLELISM)
                     .sequential()
                     .flatMap(i -> {
                         String resourceGroupName = resourceGroupPrefix + i;
+                        String nsgName = nsgNamePrefix + i;
                         return azureResourceManager
                             .resourceGroups()
                             .define(resourceGroupName)
-                            .withRegion(Region.US_WEST)
-                            .createAsync();
+                            .withRegion(region)
+                            .createAsync()
+                            .flatMap(resourceGroup -> resourceManager.serviceClient().getDeployments().checkExistenceAsync(resourceGroupName, nsgName))
+                            .flatMap(exist -> {
+                                if (!exist) {
+                                    return azureResourceManager.networkSecurityGroups()
+                                        .getByResourceGroupAsync(resourceGroupName, nsgName)
+                                        .onErrorResume(throwable -> {
+                                            if (!(throwable instanceof ManagementException)) {
+                                                return false;
+                                            }
+                                            return
+                                                ((ManagementException) throwable).getResponse().getStatusCode() ==
+                                                    404;
+                                        }, throwable -> azureResourceManager.networkSecurityGroups()
+                                            .define(nsgName)
+                                            .withRegion(region)
+                                            .withExistingResourceGroup(resourceGroupName)
+                                            .createAsync());
+                                } else {
+                                    return azureResourceManager.networkSecurityGroups()
+                                        .getByResourceGroupAsync(resourceGroupName, nsgName);
+                                }
+                            });
                     })
+                    .flatMap(nsg -> azureResourceManager.networkSecurityGroups().deleteByIdAsync(nsg.id()))
                     .blockLast();
         } finally {
             // delete resourceGroups
@@ -106,14 +139,11 @@ public class BatchCreateResourceGroupTests extends TestBase {
                         return azureResourceManager.resourceGroups().manager().serviceClient()
                                 .getResourceGroups()
                                 .checkExistenceAsync(rgName)
-                                .flatMap(new Function<Boolean, Mono<Void>>() {
-                                    @Override
-                                    public Mono<Void> apply(Boolean exist) {
-                                        if (exist) {
-                                            return azureResourceManager.resourceGroups().deleteByNameAsync(rgName);
-                                        } else {
-                                            return Mono.empty();
-                                        }
+                                .flatMap((Function<Boolean, Mono<Void>>) exist -> {
+                                    if (exist) {
+                                        return azureResourceManager.resourceGroups().deleteByNameAsync(rgName);
+                                    } else {
+                                        return Mono.empty();
                                     }
                                 });
                     })
