@@ -32,7 +32,7 @@ public class BatchCreateResourceGroupTests extends TestBase {
      */
     @Test
     public void createResourceGroups() throws InterruptedException {
-        for (int i = 1; i <= 100; i++) {
+        for (int i = 1;; i++) {
             LOGGER.info("Start batch test round " + i + "!");
             batchCreate100ResourceGroups();
             LOGGER.info("Batch test round " + i + " finished!");
@@ -90,10 +90,10 @@ public class BatchCreateResourceGroupTests extends TestBase {
                     .flatMap(i -> {
                         String resourceGroupName = resourceGroupPrefix + i;
                         return azureResourceManager
-                                .resourceGroups()
-                                .define(resourceGroupName)
-                                .withRegion(Region.US_WEST)
-                                .createAsync();
+                            .resourceGroups()
+                            .define(resourceGroupName)
+                            .withRegion(Region.US_WEST)
+                            .createAsync();
                     })
                     .blockLast();
         } finally {
