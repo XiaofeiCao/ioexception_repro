@@ -104,8 +104,9 @@ public class BatchCreateResourceGroupTests extends TestBase {
                             .define(resourceGroupName)
                             .withRegion(region)
                             .createAsync()
-                            .flatMap(resourceGroup -> Mono.fromCallable(() -> azureResourceManager.deployments().checkExistence(resourceGroupName, nsgName)))
-                            .flatMap(exist -> {
+//                            .flatMap(resourceGroup -> Mono.fromCallable(() -> azureResourceManager.deployments().checkExistence(resourceGroupName, nsgName)))
+                                .flatMap(resourceGroup -> azureResourceManager.deployments().manager().serviceClient().getDeployments().checkExistenceAsync(resourceGroupName, nsgName))
+                                .flatMap(exist -> {
                                 if (!exist) {
                                     return azureResourceManager.networkSecurityGroups()
                                         .getByResourceGroupAsync(resourceGroupName, nsgName)
