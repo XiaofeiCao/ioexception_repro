@@ -17,6 +17,14 @@
                     <target>9</target>
                 </configuration>
             </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>2.22.2</version>
+                <configuration>
+                    <argLine>-XX:+AllowRedefinitionToAddDeleteMethods</argLine>
+                </configuration>
+            </plugin>
         </plugins>
     </build>
 
@@ -29,24 +37,12 @@
     <dependency>
         <groupId>com.azure.resourcemanager</groupId>
         <artifactId>azure-resourcemanager</artifactId>
-        <version>2.19.0</version>
-        <exclusions>
-            <exclusion>
-                <groupId>com.azure</groupId>
-                <artifactId>azure-core-http-netty</artifactId>
-            </exclusion>
-        </exclusions>
+        <version>2.36.0</version>
     </dependency>
     <dependency>
         <groupId>com.azure</groupId>
         <artifactId>azure-identity</artifactId>
-        <version>1.5.4</version>
-        <exclusions>
-            <exclusion>
-                <groupId>com.azure</groupId>
-                <artifactId>azure-core-http-netty</artifactId>
-            </exclusion>
-        </exclusions>
+        <version>1.11.3</version>
         <scope>test</scope>
     </dependency>
     <dependency>
@@ -55,20 +51,26 @@
         <version>1.11.1</version>
         <scope>test</scope>
     </dependency>
+    <dependency>
+        <groupId>com.azure</groupId>
+        <artifactId>azure-core-http-netty</artifactId>
+        <version>1.14.1</version>
+        <scope>test</scope>
+    </dependency>
         <dependency>
         <groupId>com.azure</groupId>
         <artifactId>azure-core</artifactId>
-        <version>1.36.0</version> <!-- {x-version-update;com.azure:azure-core;dependency} -->
+        <version>1.47.0</version> <!-- {x-version-update;com.azure:azure-core;dependency} -->
     </dependency>
     <dependency>
         <groupId>com.azure</groupId>
         <artifactId>azure-core-management</artifactId>
-        <version>1.10.1</version> <!-- {x-version-update;com.azure:azure-core-management;dependency} -->
+        <version>1.12.0</version> <!-- {x-version-update;com.azure:azure-core-management;dependency} -->
     </dependency>
     <dependency>
         <groupId>com.azure</groupId>
         <artifactId>azure-core-test</artifactId>
-        <version>1.14.1</version> <!-- {x-version-update;com.azure:azure-core-test;dependency} -->
+        <version>1.24.0</version> <!-- {x-version-update;com.azure:azure-core-test;dependency} -->
         <scope>test</scope>
     </dependency>
     <dependency>
@@ -97,8 +99,8 @@
     </dependency>
     <dependency>
         <groupId>org.slf4j</groupId>
-        <artifactId>slf4j-simple</artifactId>
-        <version>1.7.36</version> <!-- {x-version-update;org.slf4j:slf4j-simple;external_dependency} -->
+        <artifactId>slf4j-log4j12</artifactId>
+        <version>1.7.5</version>
         <scope>test</scope>
     </dependency>
     <!-- https://mvnrepository.com/artifact/io.reactivex.rxjava3/rxjava -->
@@ -129,6 +131,11 @@
         <groupId>io.projectreactor.addons</groupId>
         <artifactId>reactor-adapter</artifactId>
         <version>3.5.0</version>
+    </dependency>
+    <dependency>
+        <groupId>io.projectreactor.tools</groupId>
+        <artifactId>blockhound</artifactId>
+        <version>1.0.8.RELEASE</version>
     </dependency>
 </dependencies>
 
