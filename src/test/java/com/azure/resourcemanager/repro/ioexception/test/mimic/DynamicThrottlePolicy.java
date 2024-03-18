@@ -11,8 +11,10 @@ import com.azure.core.http.HttpRequest;
 import com.azure.core.http.HttpResponse;
 import com.azure.core.http.policy.HttpPipelinePolicy;
 import com.azure.core.util.logging.ClientLogger;
+import com.azure.resourcemanager.resources.fluentcore.utils.ResourceManagerUtils;
 import reactor.core.publisher.Mono;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -70,8 +72,9 @@ public class DynamicThrottlePolicy implements HttpPipelinePolicy {
 //        String requestOperationType = speedometer.getPrimaryQuotaType(requestMethod, requestUrl);
         log.info("[{}/{}/{}] get quota delay start", Thread.currentThread().getName(), requestMethod, requestUrl);
         long start = System.currentTimeMillis();
-//        long delay = getQuotaDelay(speedometer, requestMethod, requestUrl, clientId);
-        long delay = 0L;
+        // emulate getQuota
+        ResourceManagerUtils.sleep(Duration.ofSeconds(5));
+        int delay = 0;
 
         long end = System.currentTimeMillis();
         long spend = end - start;
