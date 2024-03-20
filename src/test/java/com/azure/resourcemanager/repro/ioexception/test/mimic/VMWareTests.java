@@ -21,6 +21,9 @@ import com.azure.resourcemanager.resources.fluentcore.utils.ResourceManagerUtils
 import com.azure.resourcemanager.resources.models.Deployment;
 import com.azure.resourcemanager.resources.models.DeploymentMode;
 import com.azure.resourcemanager.resources.models.ProvisioningState;
+import io.netty.channel.ChannelOption;
+import io.netty.channel.epoll.EpollChannelOption;
+import io.netty.resolver.DefaultAddressResolverGroup;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 import reactor.core.publisher.Flux;
@@ -174,20 +177,21 @@ public class VMWareTests extends TestBase {
         String clientId = System.getenv("AZURE_CLIENT_ID");
         String clientSecret = System.getenv("AZURE_CLIENT_SECRET");
         String subscriptionId = System.getenv("AZURE_SUBSCRIPTION_ID");
-
-        ConnectionProvider connectionProvider = ConnectionProvider.builder("AzureV2Connection")
-                .maxConnections(500)
-                // When the maximum number of channels in the pool is reached, up to specified new attempts to
-                // acquire a channel are delayed (pending) until a channel is returned to the pool again, and further attempts are declined with an error.
-                // PoolAcquirePendingLimitException will be thrown directly when the maximum number of channels in the pool reached, it will drop the request directly
-                // So we set pendingAcquireMaxCount to -1 to not limit the maximum number of channels
-                .pendingAcquireMaxCount(-1)
-                .maxIdleTime(Duration.ofSeconds(60)) // Configures the maximum time for a connection to stay idle to 20 seconds.
-                //.maxLifeTime(Duration.ofSeconds(60)) // Configures the maximum time for a connection to stay alive to 60 seconds.
-                .pendingAcquireTimeout(Duration.ofSeconds(60)) // Configures the maximum time for the pending acquire operation to 60 seconds. The request will be retried when pendingAcquireTimeout
-                //.evictInBackground(Duration.ofSeconds(120)) // Every two minutes, the connection pool is regularly checked for connections that are applicable for removal.
-                .build();
-        HttpClient httpClient = new NettyAsyncHttpClientBuilder()
+        ConnectionProvider connectionProvider = ConnectionProvider.builder("clouddriverAzureV2Connection")
+            .maxConnections(500)
+            .pendingAcquireMaxCount(-1)
+            .maxIdleTime(Duration.ofSeconds(20))
+            .pendingAcquireTimeout(Duration.ofSeconds(90))
+            .evictInBackground(Duration.ofSeconds(60))
+            .build();
+        reactor.netty.http.client.HttpClient nettyHttpClient = reactor.netty.http.client.HttpClient.create(connectionProvider)
+            .resolver(DefaultAddressResolverGroup.INSTANCE)
+            .option(ChannelOption.SO_KEEPALIVE, true)
+            // The options below are available only when Epoll transport is used
+            .option(EpollChannelOption.TCP_KEEPIDLE, 300)
+            .option(EpollChannelOption.TCP_KEEPINTVL, 60)
+            .option(EpollChannelOption.TCP_KEEPCNT, 8);
+        HttpClient httpClient = new NettyAsyncHttpClientBuilder(nettyHttpClient)
                 .responseTimeout(Duration.of(90, ChronoUnit.SECONDS))
                 .readTimeout(Duration.of(60, ChronoUnit.SECONDS))
                 .connectTimeout(Duration.of(30, ChronoUnit.SECONDS))
