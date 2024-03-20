@@ -73,7 +73,7 @@ public class DynamicThrottlePolicy implements HttpPipelinePolicy {
         log.info("[{}/{}/{}] get quota delay start", Thread.currentThread().getName(), requestMethod, requestUrl);
         long start = System.currentTimeMillis();
         // emulate getQuota
-        ResourceManagerUtils.sleep(Duration.ofSeconds(5));
+//        ResourceManagerUtils.sleep(Duration.ofSeconds(5));
         int delay = 0;
 
         long end = System.currentTimeMillis();
